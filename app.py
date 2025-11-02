@@ -1,5 +1,5 @@
 # app.py — YOLOv5 + Streamlit (CPU) con parche forzado de st.image
-# Probado con: Python 3.10, torch==1.12.1+cpu, torchvision==0.13.1, yolov5==7.0.9
+# Compatible: Python 3.10, torch==1.12.1+cpu, torchvision==0.13.1, yolov5==7.0.9
 
 # ------------------------- IMPORTS BÁSICOS -------------------------
 import io
@@ -9,32 +9,26 @@ from PIL import Image
 import streamlit as st
 
 # ===================== PARCHE FORZADO DE st.image =====================
-# Este parche se aplica ANTES de cualquier uso de st.image.
-# Convierte PIL/NumPy a PNG en memoria y elimina 'channels' para evitar el error.
+# Convierte PIL/NumPy a PNG en memoria y elimina 'channels' para evitar el TypeError.
 _ORIG_ST_IMAGE = st.image
 
 def _safe_to_pil_rgb(x):
     if isinstance(x, Image.Image):
         return x.convert("RGB")
     if isinstance(x, (bytes, bytearray)):  # ya es binario/PNG/JPG
-        buf = io.BytesIO(x)
         try:
-            im = Image.open(buf)
+            im = Image.open(io.BytesIO(x))
             return im.convert("RGB")
         except Exception:
-            # Si no es imagen válida, se renderiza como está
             return None
     if isinstance(x, np.ndarray):
         arr = x
         if arr.dtype != np.uint8:
             arr = np.clip(arr, 0, 255).astype(np.uint8)
-        # 2D -> RGB
         if arr.ndim == 2:
             arr = np.stack([arr] * 3, axis=-1)
-        # RGBA -> RGB
         if arr.ndim == 3 and arr.shape[-1] == 4:
             arr = arr[..., :3]
-        # Intentar BGR->RGB (si viene de OpenCV)
         try:
             if arr.ndim == 3 and arr.shape[-1] == 3:
                 arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
@@ -50,7 +44,6 @@ def _st_image_safe(data, *args, **kwargs):
             kwargs.pop("channels", None)
             kwargs.setdefault("use_container_width", True)
             return _ORIG_ST_IMAGE(data, **kwargs)
-
         buf = io.BytesIO()
         pil.save(buf, format="PNG")
         buf.seek(0)
@@ -58,9 +51,9 @@ def _st_image_safe(data, *args, **kwargs):
         kwargs.setdefault("use_container_width", True)
         return _ORIG_ST_IMAGE(buf.getvalue(), **kwargs)
     except Exception as e:
-        return _ORIG_ST_IMAGE(f"[Render error] {e}", **{"use_container_width": True})
+        return _ORIG_ST_IMAGE(f"[Render error] {e}", use_container_width=True)
 
-# Monkey-patch global
+# Monkey-patch global (debe ejecutarse ANTES de cualquier st.image)
 st.image = _st_image_safe
 # =================== FIN PARCHE FORZADO DE st.image ===================
 
@@ -70,6 +63,7 @@ import pandas as pd
 
 # ------------------------- CONFIG DE PÁGINA --------------------------
 st.set_page_config(page_title="YOLOv5 Streamlit (CPU)", page_icon="🧿", layout="wide")
+st.markdown("### ✅ Parche `st.image` activo")  # <-- Confirmación visual
 st.title("🧿 Detección de Objetos (YOLOv5)")
 
 with st.sidebar:
@@ -83,9 +77,8 @@ with st.sidebar:
 # -------------------------- CARGA DEL MODELO -------------------------
 @st.cache_resource(show_spinner=True)
 def load_model():
-    # Requiere yolov5==7.0.9 en requirements
-    import yolov5
-    model = yolov5.load("yolov5s.pt")   # archivo en la raíz del repo
+    import yolov5  # requiere yolov5==7.0.9 en requirements.txt
+    model = yolov5.load("yolov5s.pt")   # el archivo .pt debe estar en la raíz del repo
     model.to("cpu")
     return model
 
@@ -122,7 +115,7 @@ if src_img is None:
     st.stop()
 
 st.caption("Imagen de entrada")
-st.image(src_img)  # <- pasa por el parche
+st.image(src_img)  # <- siempre pasa por el parche
 
 # --------------------------- INFERENCIA ------------------------------
 with st.spinner("Detectando…"):
@@ -132,7 +125,7 @@ with st.spinner("Detectando…"):
 # Render visual (results.render() -> lista de arrays BGR)
 rendered = results.render()[0]
 st.subheader("🖼️ Imagen con detecciones")
-st.image(rendered)  # <- pasa por el parche
+st.image(rendered)  # <- siempre pasa por el parche
 
 # Tabla
 st.subheader("📄 Detecciones")
