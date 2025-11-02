@@ -1,32 +1,10 @@
-# Streamlit
-streamlit==1.34.0
-
-# Núcleo científico (compatibles entre sí en Py3.10)
-numpy==1.24.3
-pandas==2.0.3
-scipy==1.10.1
-Pillow==10.3.0
-matplotlib==3.7.3
-
-# OpenCV sin GUI
-opencv-python-headless==4.7.0.72
-
-# PyTorch CPU wheels para Python 3.10
-# (no uses el sufijo +cpu; el resolver 'uv' lo rechaza)
+streamlit==1.28.2
 torch==1.12.1
 torchvision==0.13.1
-# Si quieres forzar índice CPU de PyTorch, puedes dejar esta línea,
-# pero no es necesaria:
-# -f https://download.pytorch.org/whl/cpu
-
-# YOLOv5 (mantén uno: YOLOv5 ó Ultralytics; aquí usamos YOLOv5)
+numpy==1.24.3
+Pillow==10.3.0
+opencv-python-headless==4.7.0.72
+pandas==2.0.3
+# Uno de estos dos estará disponible; el código maneja ambos:
+ultralytics==8.3.0
 yolov5==7.0.9
-# ultralytics
-
-# Utilidades
-gitpython==3.1.30
-psutil==5.9.8
-PyYAML==6.0.1         # <- clave: evita compilar 5.4.1
-requests==2.31.0
-tqdm==4.64.0
-huggingface-hub==0.24.7
