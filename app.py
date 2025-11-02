@@ -1,8 +1,8 @@
 # app.py
-# ------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Detección de objetos con YOLOv5 (CPU) en Streamlit
-# Compatible con: Python 3.10, torch==1.12.1, yolov5==7.0.9
-# ------------------------------------------------------------------
+# Compatible: Python 3.10, torch==1.12.1, torchvision==0.13.1, yolov5==7.0.9
+# ------------------------------------------------------------------------------
 
 import os
 import sys
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ------------ Configuración de la página ----------
+# ---------------- Configuración de la página ----------------
 st.set_page_config(
     page_title="Detección de Objetos en Tiempo Real",
     page_icon="🔍",
@@ -21,122 +21,159 @@ st.set_page_config(
 
 st.title("🔍 Detección de Objetos en Imágenes (YOLOv5)")
 st.markdown(
-    "Esta aplicación usa **YOLOv5** para detectar objetos en una imagen capturada con tu cámara. "
+    "Esta aplicación usa **YOLOv5** para detectar objetos en una imagen capturada con la cámara. "
     "Ajusta los parámetros en la barra lateral y toma una foto para ver los resultados."
 )
 
-# ------------ Carga del modelo (cacheado) ----------
+# ---------------- Carga de modelo (cacheado) ----------------
 @st.cache_resource
-def load_yolov5_model(model_path: str = "yolov5s.pt"):
-    # 1) Si tienes el peso local, lo usa; si no, descarga desde torch.hub
+def load_yolov5(model_path="yolov5s.pt"):
+    """
+    Carga robusta de YOLOv5:
+    1) Intenta con el paquete 'yolov5' (pypi) si está disponible.
+    2) Fallback: torch.hub ultralytics/yolov5.
+    """
     try:
         import yolov5
-        # yolov5.load devuelve un wrapper que acepta ndarrays de OpenCV
-        model = yolov5.load(model_path) if os.path.exists(model_path) else yolov5.load("yolov5s")
+        try:
+            model = yolov5.load(model_path)  # usa el .pt local si existe
+        except Exception:
+            # Fallback a los pesos por defecto si no encuentra el archivo
+            model = yolov5.load("yolov5s")
+        return model
     except Exception:
-        # Fallback a torch.hub (requiere internet en primer arranque)
-        model = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True)
-    return model
+        # Fallback torch.hub
+        device = torch.device("cpu")
+        model = torch.hub.load(
+            "ultralytics/yolov5", "yolov5s", pretrained=True
+        ).to(device)
+        return model
 
 with st.spinner("Cargando modelo YOLOv5..."):
-    model = load_yolov5_model()
+    model = load_yolov5("yolov5s.pt")
 
-# ------------ Sidebar de parámetros ----------
+if model is None:
+    st.error("No se pudo cargar el modelo. Verifica dependencias y vuelve a intentar.")
+    st.stop()
+
+# ---------------- Sidebar / Parámetros ----------------
 st.sidebar.title("Parámetros de detección")
-conf = st.sidebar.slider("Confianza mínima", 0.0, 1.0, 0.25, 0.01)
-iou  = st.sidebar.slider("Umbral IoU",      0.0, 1.0, 0.45, 0.01)
-agnostic = st.sidebar.checkbox("NMS class-agnostic", False)
-multi_label = st.sidebar.checkbox("Múltiples etiquetas por caja", False)
-max_det = st.sidebar.number_input("Detecciones máximas", 10, 2000, 1000, 10)
+conf_slider = st.sidebar.slider("Confianza mínima", 0.0, 1.0, 0.25, 0.01)
+iou_slider  = st.sidebar.slider("Umbral IoU",       0.0, 1.0, 0.45, 0.01)
 
-# Aplica parámetros al modelo (si existen en la versión instalada)
-for attr, val in [
-    ("conf", conf),
-    ("iou", iou),
-    ("agnostic", agnostic),
-    ("multi_label", multi_label),
-    ("max_det", max_det),
-]:
-    if hasattr(model, attr):
-        setattr(model, attr, val)
+# Ajustes del modelo (si están disponibles)
+try:
+    model.conf = conf_slider
+    model.iou  = iou_slider
+    model.agnostic    = st.sidebar.checkbox("NMS class-agnostic", False)
+    model.multi_label = st.sidebar.checkbox("Múltiples etiquetas por caja", False)
+    model.max_det     = st.sidebar.number_input("Detecciones máximas", 10, 2000, 1000, 10)
+except Exception:
+    st.sidebar.caption("Algunas opciones avanzadas no están disponibles en esta build.")
 
-# ------------ UI principal  ----------
-main = st.container()
-with main:
-    picture = st.camera_input("Capturar imagen", key="camera")
+# ---------------- Captura de imagen ----------------
+picture = st.camera_input("Capturar imagen", key="camera")
 
-    if picture:
-        # Decodificar bytes a imagen OpenCV (BGR)
-        img_bytes = picture.getvalue()
-        img_bgr = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+if not picture:
+    st.info("Toma una foto con la cámara para iniciar la detección.")
+    st.stop()
 
-        with st.spinner("Detectando objetos..."):
-            results = model(img_bgr)
+# Decodificar a BGR (OpenCV)
+bytes_data = picture.getvalue()
+img_bgr = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+if img_bgr is None:
+    st.error("No se pudo decodificar la imagen.")
+    st.stop()
 
-        # ---------- Renderizado seguro ----------
-        # YOLOv5 (repo original) modifica results.imgs in-place y devuelve None.
-        # Por claridad, tomamos la imagen anotada desde results.render().
+# ---------------- Inferencia ----------------
+with st.spinner("Detectando objetos..."):
+    results = model(img_bgr)
+
+# ---------------- Renderizado robusto para st.image ----------------
+# Intentamos obtener la imagen ANOTADA (con cajas) en BGR
+annotated_bgr = None
+try:
+    rendered = results.render()  # normalmente devuelve list[np.ndarray(BGR)]
+    if isinstance(rendered, list) and len(rendered) > 0:
+        annotated_bgr = rendered[0]
+except Exception:
+    pass
+
+if annotated_bgr is None:
+    # Fallback: algunas versiones dejan la imagen ya anotada en results.imgs
+    if hasattr(results, "imgs") and isinstance(results.imgs, list) and len(results.imgs) > 0:
+        annotated_bgr = results.imgs[0]
+    else:
+        annotated_bgr = img_bgr  # último recurso (sin cajas)
+
+# Asegurar formato correcto
+if isinstance(annotated_bgr, list) and len(annotated_bgr) > 0:
+    annotated_bgr = annotated_bgr[0]
+if hasattr(annotated_bgr, "detach"):
+    annotated_bgr = annotated_bgr.detach().cpu().numpy()
+annotated_bgr = np.asarray(annotated_bgr)
+if annotated_bgr.ndim == 2:
+    annotated_bgr = cv2.cvtColor(annotated_bgr, cv2.COLOR_GRAY2BGR)
+if annotated_bgr.dtype != np.uint8:
+    annotated_bgr = np.clip(annotated_bgr, 0, 255).astype(np.uint8)
+
+# BGR -> RGB y a PIL para Streamlit
+from PIL import Image
+annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+img_pil = Image.fromarray(annotated_rgb)
+
+# ---------------- Mostrar resultados ----------------
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Imagen con detecciones")
+    st.image(img_pil, use_container_width=True)
+
+# Parseo de predicciones (soporta variantes de YOLOv5)
+with col2:
+    st.subheader("Objetos detectados")
+
+    # Compatibilidad: results.pred (clásico) o results.xyxy
+    pred = None
+    if hasattr(results, "pred"):
+        pred = results.pred[0]
+    elif hasattr(results, "xyxy"):
+        pred = results.xyxy[0]
+
+    # Nombres de clases
+    label_names = None
+    if hasattr(results, "names"):
+        label_names = results.names
+    elif hasattr(model, "names"):
+        label_names = model.names
+
+    data_rows = []
+    if pred is not None and len(pred) > 0 and label_names is not None:
+        # pred: [x1,y1,x2,y2,conf,cls]
         try:
-            rendered_list = results.render()  # list[np.ndarray BGR]
-            annotated_bgr = rendered_list[0] if isinstance(rendered_list, list) else results.imgs[0]
+            cls_col = pred[:, 5].cpu().numpy() if hasattr(pred, "cpu") else np.asarray(pred)[:, 5]
+            conf_col = pred[:, 4].cpu().numpy() if hasattr(pred, "cpu") else np.asarray(pred)[:, 4]
         except Exception:
-            # Fallback: si por alguna razón no existiera render(), usa la original
-            annotated_bgr = img_bgr
+            # Fallback muy defensivo
+            arr = np.asarray(pred)
+            cls_col = arr[:, 5]
+            conf_col = arr[:, 4]
 
-        annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+        # Conteo por clase
+        unique_cls, counts = np.unique(cls_col.astype(int), return_counts=True)
+        for c, n in zip(unique_cls, counts):
+            name = label_names.get(int(c), str(int(c))) if isinstance(label_names, dict) else label_names[int(c)]
+            avg_conf = float(conf_col[cls_col == c].mean()) if np.any(cls_col == c) else 0.0
+            data_rows.append({"Categoría": name, "Cantidad": int(n), "Confianza promedio": f"{avg_conf:.2f}"})
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Imagen con detecciones")
-            st.image(annotated_rgb, channels="RGB", use_container_width=True)
+    if data_rows:
+        df = pd.DataFrame(data_rows)
+        st.dataframe(df, use_container_width=True)
+        st.bar_chart(df.set_index("Categoría")["Cantidad"])
+    else:
+        st.info("No se detectaron objetos con los parámetros actuales. "
+                "Prueba a bajar el umbral de confianza.")
 
-        # ---------- Tabla/conteo de detecciones ----------
-        with col2:
-            st.subheader("Objetos detectados")
-
-            # Compatibilidad de API:
-            # - yolov5<=7 usa results.pred[0] (tensor Nx6 [x1,y1,x2,y2,conf,cls])
-            # - También existe results.xyxy[0] con las mismas columnas
-            preds = None
-            if hasattr(results, "pred"):
-                preds = results.pred[0]
-            elif hasattr(results, "xyxy"):
-                preds = results.xyxy[0]
-
-            if preds is None or len(preds) == 0:
-                st.info("No se detectaron objetos con los parámetros actuales.")
-                st.caption("Prueba a reducir el umbral de confianza en la barra lateral.")
-            else:
-                # Tensores -> numpy
-                if hasattr(preds, "cpu"):
-                    preds = preds.cpu().numpy()
-
-                boxes = preds[:, :4]
-                scores = preds[:, 4]
-                classes = preds[:, 5].astype(int)
-
-                # Nombres de clases
-                names = getattr(model, "names", {})
-
-                # Conteo por clase + confianza media
-                df = (
-                    pd.DataFrame({
-                        "cls": classes,
-                        "score": scores
-                    })
-                    .assign(Categoría=lambda d: d["cls"].map(lambda i: names.get(i, str(i))))
-                    .groupby(["cls", "Categoría"], as_index=False)
-                    .agg(Cantidad=("score", "count"), **{"Confianza promedio": ("score", "mean")})
-                    .drop(columns=["cls"])
-                )
-                # Formatea confianza
-                df["Confianza promedio"] = df["Confianza promedio"].map(lambda x: f"{x:.2f}")
-
-                st.dataframe(df, use_container_width=True)
-
-                # Gráfico simple de barras (Streamlit)
-                st.bar_chart(df.set_index("Categoría")["Cantidad"])
-
+# ---------------- Footer ----------------
 st.markdown("---")
-st.caption("**Acerca de la aplicación**: Detección con YOLOv5 en CPU. "
-           "Desarrollada con Streamlit y PyTorch.")
+st.caption("Desarrollado con Streamlit y YOLOv5 (CPU).")
