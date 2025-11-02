@@ -25,28 +25,46 @@ st.markdown(
     "Ajusta los parámetros en la barra lateral y toma una foto para ver los resultados."
 )
 
+# ---------------- Utilidades ----------------
+def to_rgb_ndarray(img_bgr) -> np.ndarray:
+    """Garantiza un ndarray RGB uint8 (H,W,3) listo para st.image(..., channels='RGB')."""
+    if img_bgr is None:
+        return None
+    arr = np.asarray(img_bgr)
+    # Si viene en lista, quedarnos con el primero
+    if isinstance(img_bgr, list):
+        arr = np.asarray(img_bgr[0])
+    # Si viene como tensor, pasarlo a numpy
+    if hasattr(arr, "detach"):
+        arr = arr.detach().cpu().numpy()
+    # Si es 2D (grises), convertir a BGR
+    if arr.ndim == 2:
+        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    # Si es RGB por error, lo convertimos a BGR y luego a RGB para normalizar
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        # Detectar heurísticamente si ya es RGB; igualaremos a RGB al final
+        pass
+    # Asegurar tipo uint8
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    # Convertir de BGR->RGB (la mayoría de flujos de OpenCV están en BGR)
+    rgb = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+    return rgb
+
 # ---------------- Carga de modelo (cacheado) ----------------
 @st.cache_resource
 def load_yolov5(model_path="yolov5s.pt"):
-    """
-    Carga robusta de YOLOv5:
-    1) Intenta con el paquete 'yolov5' (pypi) si está disponible.
-    2) Fallback: torch.hub ultralytics/yolov5.
-    """
+    """Carga YOLOv5: intenta paquete 'yolov5'; si falla, usa torch.hub."""
     try:
         import yolov5
         try:
             model = yolov5.load(model_path)  # usa el .pt local si existe
         except Exception:
-            # Fallback a los pesos por defecto si no encuentra el archivo
-            model = yolov5.load("yolov5s")
+            model = yolov5.load("yolov5s")   # pesos por defecto
         return model
     except Exception:
-        # Fallback torch.hub
         device = torch.device("cpu")
-        model = torch.hub.load(
-            "ultralytics/yolov5", "yolov5s", pretrained=True
-        ).to(device)
+        model = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True).to(device)
         return model
 
 with st.spinner("Cargando modelo YOLOv5..."):
@@ -61,7 +79,6 @@ st.sidebar.title("Parámetros de detección")
 conf_slider = st.sidebar.slider("Confianza mínima", 0.0, 1.0, 0.25, 0.01)
 iou_slider  = st.sidebar.slider("Umbral IoU",       0.0, 1.0, 0.45, 0.01)
 
-# Ajustes del modelo (si están disponibles)
 try:
     model.conf = conf_slider
     model.iou  = iou_slider
@@ -89,51 +106,42 @@ if img_bgr is None:
 with st.spinner("Detectando objetos..."):
     results = model(img_bgr)
 
-# ---------------- Renderizado robusto para st.image ----------------
-# Intentamos obtener la imagen ANOTADA (con cajas) en BGR
+# ---------------- Obtener imagen anotada de forma robusta ----------------
 annotated_bgr = None
+
+# 1) results.render() suele devolver lista de BGR
 try:
-    rendered = results.render()  # normalmente devuelve list[np.ndarray(BGR)]
+    rendered = results.render()
     if isinstance(rendered, list) and len(rendered) > 0:
         annotated_bgr = rendered[0]
 except Exception:
     pass
 
+# 2) Fallback: algunas versiones exponen results.imgs
+if annotated_bgr is None and hasattr(results, "imgs"):
+    imgs = results.imgs
+    if isinstance(imgs, list) and len(imgs) > 0:
+        annotated_bgr = imgs[0]
+
+# 3) Último recurso: mostrar la foto original
 if annotated_bgr is None:
-    # Fallback: algunas versiones dejan la imagen ya anotada en results.imgs
-    if hasattr(results, "imgs") and isinstance(results.imgs, list) and len(results.imgs) > 0:
-        annotated_bgr = results.imgs[0]
-    else:
-        annotated_bgr = img_bgr  # último recurso (sin cajas)
+    annotated_bgr = img_bgr
 
-# Asegurar formato correcto
-if isinstance(annotated_bgr, list) and len(annotated_bgr) > 0:
-    annotated_bgr = annotated_bgr[0]
-if hasattr(annotated_bgr, "detach"):
-    annotated_bgr = annotated_bgr.detach().cpu().numpy()
-annotated_bgr = np.asarray(annotated_bgr)
-if annotated_bgr.ndim == 2:
-    annotated_bgr = cv2.cvtColor(annotated_bgr, cv2.COLOR_GRAY2BGR)
-if annotated_bgr.dtype != np.uint8:
-    annotated_bgr = np.clip(annotated_bgr, 0, 255).astype(np.uint8)
-
-# BGR -> RGB y a PIL para Streamlit
-from PIL import Image
-annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-img_pil = Image.fromarray(annotated_rgb)
+# Convertir a RGB ndarray uint8 sí o sí
+annotated_rgb = to_rgb_ndarray(annotated_bgr)
 
 # ---------------- Mostrar resultados ----------------
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("Imagen con detecciones")
-    st.image(img_pil, use_container_width=True)
+    # 🔧 Aquí forzamos el formato que Streamlit espera:
+    st.image(annotated_rgb, channels="RGB", use_container_width=True)
 
-# Parseo de predicciones (soporta variantes de YOLOv5)
 with col2:
     st.subheader("Objetos detectados")
 
-    # Compatibilidad: results.pred (clásico) o results.xyxy
+    # Compatibilidad de predicciones
     pred = None
     if hasattr(results, "pred"):
         pred = results.pred[0]
@@ -147,27 +155,23 @@ with col2:
     elif hasattr(model, "names"):
         label_names = model.names
 
-    data_rows = []
+    rows = []
     if pred is not None and len(pred) > 0 and label_names is not None:
-        # pred: [x1,y1,x2,y2,conf,cls]
         try:
-            cls_col = pred[:, 5].cpu().numpy() if hasattr(pred, "cpu") else np.asarray(pred)[:, 5]
+            cls_col  = pred[:, 5].cpu().numpy() if hasattr(pred, "cpu") else np.asarray(pred)[:, 5]
             conf_col = pred[:, 4].cpu().numpy() if hasattr(pred, "cpu") else np.asarray(pred)[:, 4]
         except Exception:
-            # Fallback muy defensivo
             arr = np.asarray(pred)
-            cls_col = arr[:, 5]
-            conf_col = arr[:, 4]
+            cls_col, conf_col = arr[:, 5], arr[:, 4]
 
-        # Conteo por clase
         unique_cls, counts = np.unique(cls_col.astype(int), return_counts=True)
         for c, n in zip(unique_cls, counts):
             name = label_names.get(int(c), str(int(c))) if isinstance(label_names, dict) else label_names[int(c)]
             avg_conf = float(conf_col[cls_col == c].mean()) if np.any(cls_col == c) else 0.0
-            data_rows.append({"Categoría": name, "Cantidad": int(n), "Confianza promedio": f"{avg_conf:.2f}"})
+            rows.append({"Categoría": name, "Cantidad": int(n), "Confianza promedio": f"{avg_conf:.2f}"})
 
-    if data_rows:
-        df = pd.DataFrame(data_rows)
+    if rows:
+        df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True)
         st.bar_chart(df.set_index("Categoría")["Cantidad"])
     else:
