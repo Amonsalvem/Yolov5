@@ -1,0 +1,6 @@
+[theme]
+base="dark"
+primaryColor="#FFFFFF"        # blanco
+backgroundColor="#000000"     # negro absoluto
+secondaryBackgroundColor="#0A0A0A"  # paneles/cards
+textColor="#FFFFFF"           # texto blanco
