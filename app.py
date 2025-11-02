@@ -4,7 +4,6 @@
 # Compatible: Python 3.10, torch==1.12.x, yolov5==7.0.9
 # -----------------------------------------------------------------------------
 
-import io
 import os
 import sys
 import cv2
@@ -13,6 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
+import io
 
 # ---------------- Configuración de la página ----------------
 st.set_page_config(
@@ -153,11 +153,11 @@ except Exception as e:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Imagen con detecciones")
+    st.image(img_pil, use_container_width=True)  # ← sin channels, usando PIL
     # Mostrar como bytes para evitar incompatibilidades de PIL/Streamlit
-    buf = io.BytesIO()
-    img_pil.save(buf, format="PNG")
-    buf.seek(0)
+        buf = io.BytesIO()
+        img_pil.save(buf, format="PNG")
+        buf.seek(0)
     st.image(buf.getvalue(), use_container_width=True)
 
 
