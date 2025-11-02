@@ -5,10 +5,111 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 
-# ------------------ UI ------------------
+# ------------------ UI / THEME ------------------
 st.set_page_config(page_title="YOLO Detector", layout="wide")
-st.title("🔎 YOLO Object Detection")
 
+# Tema negro absoluto + UI blanca (CSS inyectado)
+DARK_CSS = """
+<style>
+/* Fondo negro absoluto */
+html, body, [data-testid="stAppViewContainer"], .stApp, .main {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+  background: #000 !important;
+  color: #fff !important;
+  border-right: 1px solid #111 !important;
+}
+
+/* Títulos y textos */
+h1, h2, h3, h4, h5, h6, p, label, span, div, code, kbd, pre {
+  color: #fff !important;
+}
+
+/* Contenedores/expanders */
+[data-testid="stExpander"] {
+  background: #0A0A0A !important;
+  border: 1px solid #111 !important;
+}
+.block-container {
+  padding-top: 1.5rem !important;
+}
+
+/* Inputs */
+input, textarea, select {
+  background: #0A0A0A !important;
+  color: #fff !important;
+  border: 1px solid #222 !important;
+}
+::placeholder { color: #aaa !important; }
+
+/* File uploader */
+[data-testid="stFileUploader"] section div {
+  color: #ddd !important;
+}
+[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+  background: #0A0A0A !important;
+  border: 1px dashed #333 !important;
+}
+
+/* Radio/checkbox */
+[data-baseweb="radio"] label, [data-baseweb="checkbox"] label {
+  color: #fff !important;
+}
+
+/* Sliders */
+[data-testid="stSlider"] div [role="slider"] {
+  background: #fff !important;
+  border: 2px solid #fff !important;
+}
+[data-testid="stThumbValue"] {
+  background: #111 !important;
+  color: #fff !important;
+  border: 1px solid #222 !important;
+}
+
+/* Botones */
+button[kind="primary"], .stButton>button {
+  background: #fff !important;
+  color: #000 !important;
+  border: 1px solid #fff !important;
+  border-radius: 8px !important;
+}
+.stButton>button:hover { filter: brightness(0.9); }
+
+/* Tablas / DataFrame */
+[data-testid="stTable"], .stDataFrame { background: #000 !important; color: #fff !important; }
+.stDataFrame thead tr th {
+  background: #0A0A0A !important; color: #fff !important; border-bottom: 1px solid #222 !important;
+}
+.stDataFrame tbody tr td {
+  color: #fff !important; border-bottom: 1px solid #111 !important;
+}
+
+/* Mensajes */
+.stAlert { background: #0A0A0A !important; color: #fff !important; border: 1px solid #222 !important; }
+
+/* Imagen sin borde blanco */
+img { background: transparent !important; }
+
+/* Code blocks */
+pre, code { background: #0A0A0A !important; border: 1px solid #111 !important; color: #fff !important; }
+</style>
+"""
+st.markdown(DARK_CSS, unsafe_allow_html=True)
+
+# Encabezado estilizado
+st.markdown("""
+<h1 style="font-weight:700; letter-spacing:0.3px; margin-bottom:0.5rem;">
+  🔎 YOLO Object Detection
+</h1>
+<div style="height:2px; width:100%; background:#111; margin-bottom:1rem;"></div>
+""", unsafe_allow_html=True)
+
+# ------------------ Controles UI ------------------
 source = st.radio("Fuente de imagen", ["Subir archivo", "URL"], horizontal=True)
 conf_thres = st.slider("Confidence threshold", 0.0, 1.0, 0.25, 0.01)
 
@@ -68,7 +169,6 @@ def run_inference(pil_img, conf=0.25):
     if backend == "ultralytics":
         # Ultralytics (Results list-like)
         results = model.predict(pil_img, conf=conf, verbose=False)
-        # 1º elemento
         r0 = results[0]
         # Imagen anotada
         try:
@@ -112,7 +212,6 @@ def run_inference(pil_img, conf=0.25):
             if isinstance(rendered, list) and len(rendered):
                 annotated_bgr = rendered[0]
             else:
-                # Algunas versiones escriben en .ims o .imgs
                 annotated_bgr = None
                 if hasattr(results, "ims") and results.ims:
                     annotated_bgr = results.ims[0]
@@ -153,8 +252,11 @@ if img_pil is not None:
 
     with col1:
         st.subheader("Imagen con detecciones")
+        # Marco sutil para resaltar en fondo negro
+        st.markdown('<div style="background:#000;border:1px solid #111;padding:8px;border-radius:8px;">', unsafe_allow_html=True)
         # ⚠️ NO usar use_container_width (rompe en tu runtime)
         st.image(annotated_rgb)
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with col2:
         st.subheader("Objetos detectados")
