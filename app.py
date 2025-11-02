@@ -1,187 +1,167 @@
-# app.py — YOLO + Streamlit compatible con APIs antiguas y nuevas
-
 import io
+import os
 import cv2
 import numpy as np
-import pandas as pd
-from PIL import Image
 import streamlit as st
+from PIL import Image
 
-# ---------------- Utilidad robusta para mostrar imágenes ----------------
-def show_image_robusto(img):
-    """
-    Muestra 'img' (PIL o np.ndarray) en Streamlit tolerando:
-    - versiones antiguas (sin use_container_width)
-    - ausencia de 'channels'
-    """
-    # normalizamos a PIL RGB
-    if isinstance(img, np.ndarray):
-        arr = img
-        if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        # si parece BGR -> a RGB
+# ------------------ UI ------------------
+st.set_page_config(page_title="YOLO Detector", layout="wide")
+st.title("🔎 YOLO Object Detection")
+
+source = st.radio("Fuente de imagen", ["Subir archivo", "URL"], horizontal=True)
+conf_thres = st.slider("Confidence threshold", 0.0, 1.0, 0.25, 0.01)
+
+img_pil = None
+if source == "Subir archivo":
+    up = st.file_uploader("Sube una imagen (JPG/PNG)", type=["jpg","jpeg","png"])
+    if up is not None:
+        img_pil = Image.open(up).convert("RGB")
+else:
+    url = st.text_input("Pega la URL de una imagen:")
+    if url:
         try:
-            if arr.ndim == 3 and arr.shape[-1] == 3:
-                arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+            # Leer con OpenCV para tolerar algunos headers
+            data = np.frombuffer(st.session_state.get("raw_bytes", b""), dtype=np.uint8)
+            # Si no hay caché previa, intenta cv2 directamente
+            if data.size == 0:
+                import urllib.request
+                with urllib.request.urlopen(url) as resp:
+                    data = np.asarray(bytearray(resp.read()), dtype=np.uint8)
+            img_bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if img_bgr is not None:
+                img_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        except Exception:
+            st.warning("No pude descargar/decodificar la imagen de esa URL.")
+
+# ------------------ Modelo ------------------
+@st.cache_resource
+def load_model():
+    """
+    Intento 1: Ultralytics (YOLO >= v8).
+    Intento 2: YOLOv5 vía torch.hub (clásico).
+    """
+    try:
+        from ultralytics import YOLO  # si está disponible
+        m = YOLO("yolov5s.pt")  # compatible en la mayoría de entornos
+        return ("ultralytics", m)
+    except Exception:
+        pass
+
+    # Fallback a yolov5 clásico
+    import torch
+    m = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True)
+    return ("yolov5", m)
+
+backend, model = load_model()
+
+def run_inference(pil_img, conf=0.25):
+    """
+    Devuelve:
+      annotated_rgb (np.ndarray HxWx3, RGB),
+      rows (lista de diccionarios con predicciones)
+    Soporta ambas APIs.
+    """
+    annotated_rgb = np.array(pil_img)  # por si hay fallback
+    rows = []
+
+    if backend == "ultralytics":
+        # Ultralytics (Results list-like)
+        results = model.predict(pil_img, conf=conf, verbose=False)
+        # 1º elemento
+        r0 = results[0]
+        # Imagen anotada
+        try:
+            annotated_rgb = r0.plot()  # np.ndarray en RGB
+        except Exception:
+            annotated_rgb = np.array(pil_img)
+
+        # Extraer cajas
+        try:
+            boxes = r0.boxes
+            names = r0.names if hasattr(r0, "names") else model.names
+            if boxes is not None:
+                for b in boxes:
+                    cls_id = int(b.cls[0].item())
+                    confv = float(b.conf[0].item())
+                    x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].tolist()]
+                    rows.append({
+                        "class_id": cls_id,
+                        "class_name": names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id),
+                        "confidence": round(confv, 3),
+                        "x1": round(x1, 1), "y1": round(y1, 1),
+                        "x2": round(x2, 1), "y2": round(y2, 1),
+                    })
         except Exception:
             pass
-        pil = Image.fromarray(arr)
-    elif isinstance(img, Image.Image):
-        pil = img.convert("RGB")
+
     else:
-        # si llega bytes/jpg/png
+        # YOLOv5 clásico
+        results = model(pil_img, size=640)
+        # Ajustar confianza si el modelo lo soporta (algunos builds no)
         try:
-            pil = Image.open(io.BytesIO(img)).convert("RGB")
+            model.conf = conf
         except Exception:
-            st.image(img)  # último recurso
-            return
+            pass
 
-    # intentamos con argumentos nuevos → viejos → sin args
-    try:
-        st.image(pil, use_container_width=True)
-    except TypeError:
+        # Imagen anotada (API v5)
+        annotated_rgb = np.array(pil_img)
         try:
-            st.image(pil, use_column_width=True)
-        except TypeError:
-            st.image(pil)
-
-# --------------- App UI ---------------
-st.set_page_config(page_title="YOLO Streamlit", layout="wide")
-st.title("🧿 Detección de objetos")
-
-with st.sidebar:
-    st.header("Parámetros de detección")
-    conf = st.slider("Confianza mínima", 0.0, 1.0, 0.25, 0.01)
-    iou = st.slider("Umbral IoU", 0.0, 1.0, 0.45, 0.01)
-    class_agnostic = st.checkbox("NMS class-agnostic", value=False)
-    multi_label = st.checkbox("Múltiples etiquetas por caja", value=False)
-    max_det = st.number_input("Detecciones máximas", 1, 3000, 1000, 1)
-
-# --------------- Carga del modelo (soporta yolov5 o ultralytics) ---------------
-@st.cache_resource(show_spinner=True)
-def load_model():
-    try:
-        # Paquete yolov5 clásico
-        import yolov5
-        m = yolov5.load("yolov5s.pt")  # asegúrate de tener el .pt en el repo
-        m.to("cpu")
-        return ("yolov5", m)
-    except Exception:
-        # Fallback a Torch Hub
-        import torch
-        m = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True)
-        m.to("cpu")
-        return ("yolov5_hub", m)
-
-flavor, model = load_model()
-
-# Ajustes (los nombres existen en yolov5; si no, ignoramos)
-for attr, val in dict(conf=conf, iou=iou, agnostic=class_agnostic,
-                      multi_label=multi_label, max_det=int(max_det)).items():
-    try:
-        setattr(model, attr, val)
-    except Exception:
-        pass
-
-# --------------- Entrada ---------------
-st.subheader("📷 Entrada")
-c1, c2 = st.columns(2)
-with c1:
-    cam = st.camera_input("Usa tu cámara (opcional)")
-with c2:
-    up = st.file_uploader("O sube una imagen", type=["jpg", "jpeg", "png", "bmp", "webp"])
-
-src_img = None
-if cam is not None:
-    src_img = Image.open(cam).convert("RGB")
-elif up is not None:
-    src_img = Image.open(up).convert("RGB")
-
-if src_img is None:
-    st.info("Toma una foto o sube una imagen para ejecutar la detección.")
-    st.stop()
-
-st.caption("Imagen de entrada")
-show_image_robusto(src_img)
-
-# --------------- Inferencia ---------------
-with st.spinner("Detectando…"):
-    results = model(src_img, size=640) if flavor.startswith("yolov5") else model(src_img)
-
-# --------------- Render de imagen anotada (manejo multi-APIs) ---------------
-def obtener_anotada(results):
-    """
-    Devuelve np.ndarray/PIL de la imagen anotada usando la API disponible.
-    Soporta:
-      - yolov5 clásico: results.render() -> lista de np.ndarray (BGR)
-      - ultralytics v8 (por si el paquete cambia): results[0].plot()
-    """
-    # YOLOv5 clásico
-    try:
-        if hasattr(results, "render"):
-            ims = results.render()
-            if isinstance(ims, list) and len(ims) > 0:
-                return ims[0]  # BGR
-    except Exception:
-        pass
-
-    # Ultralytics (v8)
-    try:
-        item0 = results[0]
-        if hasattr(item0, "plot"):
-            return item0.plot()  # RGB np.ndarray
-    except Exception:
-        pass
-
-    return None
-
-annot = obtener_anotada(results)
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("🖼️ Imagen con detecciones")
-    if annot is not None:
-        show_image_robusto(annot)
-    else:
-        # Sin anotada disponible, mostramos la original
-        show_image_robusto(src_img)
-
-# --------------- Tabla de detecciones (multi-APIs) ---------------
-with col2:
-    st.subheader("📄 Detecciones")
-    df = None
-    # YOLOv5 clásico
-    try:
-        df = results.pandas().xyxy[0]
-        df = df.rename(columns={
-            "xmin": "xmin", "ymin": "ymin", "xmax": "xmax", "ymax": "ymax",
-            "confidence": "confianza", "class": "clase_id", "name": "clase",
-        })
-    except Exception:
-        # Ultralytics v8
-        try:
-            r0 = results[0]
-            boxes = r0.boxes  # Boxes object
-            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, "cpu") else boxes.xyxy
-            confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else boxes.conf
-            clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else boxes.cls
-            names = getattr(getattr(r0, "names", {}), "items", lambda: {})()
-            # Crear DataFrame
-            data = []
-            for i in range(len(xyxy)):
-                xmin, ymin, xmax, ymax = xyxy[i].tolist()
-                conf = float(confs[i])
-                cid = int(clss[i])
-                cname = r0.names[cid] if hasattr(r0, "names") and cid in r0.names else str(cid)
-                data.append([xmin, ymin, xmax, ymax, conf, cid, cname])
-            df = pd.DataFrame(data, columns=["xmin","ymin","xmax","ymax","confianza","clase_id","clase"])
+            # En v5: results.render() devuelve lista BGR y setea results.ims/imgs
+            rendered = results.render()
+            if isinstance(rendered, list) and len(rendered):
+                annotated_bgr = rendered[0]
+            else:
+                # Algunas versiones escriben en .ims o .imgs
+                annotated_bgr = None
+                if hasattr(results, "ims") and results.ims:
+                    annotated_bgr = results.ims[0]
+                if annotated_bgr is None and hasattr(results, "imgs") and results.imgs:
+                    annotated_bgr = results.imgs[0]
+            if annotated_bgr is not None:
+                annotated_rgb = annotated_bgr[..., ::-1]
         except Exception:
-            df = None
+            pass
 
-    if df is None or df.empty:
-        st.info("No se pudieron construir las detecciones (o no se detectaron objetos).")
-    else:
-        st.dataframe(df, use_container_width=True if "use_container_width" in st.image.__code__.co_varnames else True)
+        # Parse de predicciones (pandas via .pandas().xyxy[0])
+        try:
+            df = results.pandas().xyxy[0]
+            names = model.names if hasattr(model, "names") else {}
+            for _, r in df.iterrows():
+                cls_id = int(r["class"])
+                rows.append({
+                    "class_id": cls_id,
+                    "class_name": names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id),
+                    "confidence": round(float(r["confidence"]), 3),
+                    "x1": round(float(r["xmin"]), 1),
+                    "y1": round(float(r["ymin"]), 1),
+                    "x2": round(float(r["xmax"]), 1),
+                    "y2": round(float(r["ymax"]), 1),
+                })
+        except Exception:
+            pass
 
-st.success("Listo ✅")
+    # Asegurar tipo uint8
+    if annotated_rgb.dtype != np.uint8:
+        annotated_rgb = np.clip(annotated_rgb, 0, 255).astype(np.uint8)
+    return annotated_rgb, rows
+
+# ------------------ Ejecución ------------------
+if img_pil is not None:
+    col1, col2 = st.columns(2)
+    annotated_rgb, rows = run_inference(img_pil, conf=conf_thres)
+
+    with col1:
+        st.subheader("Imagen con detecciones")
+        # ⚠️ NO usar use_container_width (rompe en tu runtime)
+        st.image(annotated_rgb)
+
+    with col2:
+        st.subheader("Objetos detectados")
+        if rows:
+            import pandas as pd
+            st.dataframe(pd.DataFrame(rows))
+        else:
+            st.info("Sin detecciones (o no se pudo parsear la salida).")
+else:
+    st.info("Sube una imagen o pega una URL para comenzar.")
