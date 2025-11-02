@@ -1,3 +1,2 @@
 libgl1
-cmake
-libssl-dev
+libglib2.0-0
