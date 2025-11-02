@@ -4,6 +4,7 @@
 # Compatible: Python 3.10, torch==1.12.x, yolov5==7.0.9
 # -----------------------------------------------------------------------------
 
+import io
 import os
 import sys
 import cv2
@@ -153,7 +154,12 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("Imagen con detecciones")
-    st.image(img_pil, use_container_width=True)  # ← sin channels, usando PIL
+    # Mostrar como bytes para evitar incompatibilidades de PIL/Streamlit
+    buf = io.BytesIO()
+    img_pil.save(buf, format="PNG")
+    buf.seek(0)
+    st.image(buf.getvalue(), use_container_width=True)
+
 
 with col2:
     st.subheader("Objetos detectados")
