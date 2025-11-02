@@ -1,17 +1,17 @@
 # Streamlit
 streamlit==1.34.0
 
-# Núcleo científico (compatibles entre sí)
+# Núcleo científico (compatibles con Py3.10)
 numpy==1.24.3
 pandas==2.0.3
 scipy==1.10.1
 Pillow==10.3.0
 matplotlib==3.7.3
 
-# OpenCV sin GUI (compatible con numpy 1.24.x)
+# OpenCV sin GUI (evita conflicto con numpy>=1.26)
 opencv-python-headless==4.7.0.72
 
-# PyTorch CPU wheels para Python 3.10
+# PyTorch CPU para Py3.10 (desde índice oficial)
 -f https://download.pytorch.org/whl/cpu
 torch==1.12.1+cpu
 torchvision==0.13.1+cpu
@@ -27,3 +27,7 @@ PyYAML==5.4.1
 requests==2.31.0
 tqdm==4.64.0
 huggingface-hub==0.24.7
+
+# Helpers de build (evitan el error de distutils si alguna rueda falta)
+setuptools<70
+wheel
